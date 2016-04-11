@@ -1,13 +1,16 @@
 #require "Si702x.class.nut:1.0.0"
 
+//
+// Environmental Logger Demo integrated with Azure IoT Hub
+// Device
+//
+
 logging <- true; 
 
-eventData <- {};
-eventData.temp <- 0;
-eventData.humid <- 0;
+const PERIOD = 2; // sensor reading period
 
-const PERIOD = 2;
-const ARRSIZE = 5;
+// Array to compute averages
+const ARRSIZE = 5; 
 tempArr <- array(ARRSIZE);
 humidArr <- array(ARRSIZE);
 for (local i=0; i<ARRSIZE; i++) {
@@ -15,16 +18,18 @@ for (local i=0; i<ARRSIZE; i++) {
     humidArr[i] = 0.0;
 }
 idx <- -1;
+
+// Temp and humidity thresholds
 const TEMPTHRES = 30.0;
 const HUMIDTHRES = 60.0;
 
+// Initialize I2C and sensor
 hardware.i2c89.configure(CLOCK_SPEED_400_KHZ);
 tempHumid <- Si702x(hardware.i2c89);
 
-
-// Create a function that will be called in a minute loop
+// Periodically get data
 function getData() {
-    imp.wakeup(PERIOD, getData);
+    imp.wakeup(PERIOD, getData); // schedule next call
     
     tempHumid.read(function(result) {
         if ("err" in result) {
@@ -32,70 +37,92 @@ function getData() {
             return;
         }
         
+        // Move to next slot and store values
         idx++;
         if (idx >= ARRSIZE) idx = 0;
         tempArr[idx] = result.temperature;
         humidArr[idx] = result.humidity;
-        
-//        data.temp = result.temperature;
-//        data.humid = result.humidity;
-//        server.log(format("temp: %.01f°C, humid: %.01f%%", data.temp, data.humid));
 
+        // Logging or alerting mode?
         if (logging) {
-            computeLog();
+            modeLog();
         } else {
-            computeAlert();
+            modeAlert();
         }
 
     });
     
 }
 
-function computeLog() {
+// Log mode
+function modeLog() {
+
+    local eventData = {};
+    eventData.temp <- 0.0;
+    eventData.humid <- 0.0;
+
+    blink2();
+    
+    // Copy to table
     eventData.temp = tempArr[idx];
     eventData.humid = humidArr[idx];
     server.log(format("temp: %.01f°C, humid: %.01f%%", eventData.temp, eventData.humid));
-    blink2();
+
+    // Send message to agent
     agent.send("log", eventData);
 }
 
-function computeAlert() {
+// Alert mode
+function modeAlert() {
+
+    local eventData = {};
+    eventData.temp <- 0.0;
+    eventData.humid <- 0.0;
+    
+    local avgTemp = 0.0;
+    local avgHumid = 0.0;
+    
     blink1();
 
-    local temp = 0.0;
-    local humid = 0.0;
-    // compute average, etc
+    // Compute averages
     for (local i=0; i<ARRSIZE; i++) {
-        temp += tempArr[i];
-        humid += humidArr[i];
+        avgTemp += tempArr[i];
+        avgHumid += humidArr[i];
     }
-    temp = temp / ARRSIZE;
-    humid = humid / ARRSIZE;
-    server.log(format("avg: temp: %.01f°C, humid: %.01f%%", temp, humid));
+    avgTemp = avgTemp / ARRSIZE;
+    avgHumid = avgHumid / ARRSIZE;
+    server.log(format("avg: temp: %.01f°C, humid: %.01f%%", avgTemp, avgHumid));
     
-    if ((temp >= TEMPTHRES) && (humid >= HUMIDTHRES)) {
-        server.log(format("ALERT: temp: %.01f°C, humid: %.01f%%", temp, humid));
-        eventData.temp = temp;
-        eventData.humid = humid;
+    if ((avgTemp >= TEMPTHRES) && (avgHumid >= HUMIDTHRES)) {
+        server.log(format("ALERT!"));
+        
+        // Copy to table
+        eventData.temp = avgTemp;
+        eventData.humid = avgHumid;
+        // Send message to agent
         agent.send("alert", eventData);
+        
         blink3();
     }
 }
 
+// Alert mode heartbeat
 function blink1() {
     ledPin.write(1);
     imp.sleep(0.05);
     ledPin.write(0);
 }
 
+// Logging mode heartbeat
 function blink2() {
     ledPin.write(1);
     imp.sleep(0.5);
     ledPin.write(0);
 }
 
+// Alert signal
 function blink3() {
-    for (local i = 10; i--; i >0) {
+    for (local i = 5; i--; i >0) {
         ledPin.write(1);
         imp.sleep(0.1);
         ledPin.write(0);
@@ -103,13 +130,16 @@ function blink3() {
     }
 }
 
+// Called when agent sends a command
 agent.on("command", function(command) {
     switch (command) {
         case "log":
+            // Turn on logging mode
             logging <- true;
             server.log("mode: logging")
             break;
         case "alert":
+            // Turn on alert mode
             server.log(format("mode: alerting (thresholds - temp: %.01f°C, humid: %.01f%%", 
                 TEMPTHRES, HUMIDTHRES));
             logging <- false;
@@ -121,6 +151,9 @@ agent.on("command", function(command) {
 
 })
 
+// Execution starts here ...
+
+// Configure LED
 ledPin <- hardware.pin2;
 ledPin.configure(DIGITAL_OUT, 0);
 
